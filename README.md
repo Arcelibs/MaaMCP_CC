@@ -25,36 +25,22 @@ MaaMCP_CC 是一個 [MCP (Model Context Protocol)](https://modelcontextprotocol.
 - Python 3.10 以上
 - [Claude Code](https://claude.ai/download) CLI
 
-### 步驟一：下載此專案
+### 步驟一：安裝套件
 
 ```bash
-git clone https://github.com/你的帳號/MaaMCP_CC.git
+pip install maamcp-cc
+```
+
+### 步驟二：Clone 此專案
+
+```bash
+git clone https://github.com/Arcelibs/MaaMCP_CC.git
 cd MaaMCP_CC
 ```
 
-或直接下載 ZIP 解壓縮。
+Clone 完成後，用 Claude Code 開啟此資料夾，Claude Code 會**自動偵測 `.mcp.json`** 並詢問是否啟用 MaaMCP_CC。
 
-### 步驟二：安裝 Python 套件
-
-```bash
-pip install fastmcp MaaFw opencv-python
-```
-
-### 步驟三：向 Claude Code 註冊 MCP 伺服器
-
-將下方指令中的路徑替換成你實際解壓縮的位置：
-
-**Windows：**
-```bash
-claude mcp add MaaMCP_CC python "C:\你的路徑\MaaMCP_CC\server.py"
-```
-
-**macOS / Linux：**
-```bash
-claude mcp add MaaMCP_CC python "/你的路徑/MaaMCP_CC/server.py"
-```
-
-### 步驟四：確認安裝成功
+### 步驟三：確認安裝成功
 
 ```bash
 claude mcp list
