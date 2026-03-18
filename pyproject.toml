@@ -1,5 +1,5 @@
 [project]
-name = "maa-dev-mcp"
+name = "maamcp-cc"
 version = "0.1.0"
 description = "MaaFramework Pipeline 開發工具 MCP Server，專為 Claude Code 設計"
 readme = "README.md"
@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
-maa-dev-mcp = "server:main"
+maamcp-cc = "server:main"
 
 [project.urls]
 Homepage = "https://github.com/Arcelibs/MaaMCP_CC"
