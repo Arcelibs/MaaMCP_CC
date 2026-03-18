@@ -46,7 +46,7 @@ jobs:
 
             ```bash
             pip install maa-dev-mcp
-            claude mcp add MaaDevMCP maa-dev-mcp
+            claude mcp add MaaMCP_CC maa-dev-mcp
             ```
 
             詳見 [README](https://github.com/${{ github.repository }}#安裝) 取得完整說明。

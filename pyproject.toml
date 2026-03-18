@@ -15,8 +15,8 @@ dependencies = [
 maa-dev-mcp = "server:main"
 
 [project.urls]
-Homepage = "https://github.com/Arcelibs/MaaDevMCP"
-Issues = "https://github.com/Arcelibs/MaaDevMCP/issues"
+Homepage = "https://github.com/Arcelibs/MaaMCP_CC"
+Issues = "https://github.com/Arcelibs/MaaMCP_CC/issues"
 
 [build-system]
 requires = ["hatchling"]

@@ -1,14 +1,14 @@
-# MaaDevMCP
+# MaaMCP_CC
 
 > 專為 **Claude Code** 打造的 MaaFramework Pipeline 開發工具
 
 ## 這是什麼？
 
-MaaDevMCP 是一個 [MCP (Model Context Protocol)](https://modelcontextprotocol.io) 伺服器，讓 Claude Code 能夠直接操控 Android 模擬器或 Windows 視窗，專門優化 **MaaFramework Pipeline 開發流程**。
+MaaMCP_CC 是一個 [MCP (Model Context Protocol)](https://modelcontextprotocol.io) 伺服器，讓 Claude Code 能夠直接操控 Android 模擬器或 Windows 視窗，專門優化 **MaaFramework Pipeline 開發流程**。
 
 ### 與 [MaaMCP](https://github.com/MAA-AI/MaaMCP) 的差異
 
-| | MaaMCP | MaaDevMCP |
+| | MaaMCP | MaaMCP_CC |
 |---|---|---|
 | **設計對象** | Cursor、LM Studio 等早期 AI Agent | Claude Code |
 | **截圖方式** | OCR 回傳純文字 | 回傳圖片，Claude 直接用眼睛看 |
@@ -46,12 +46,12 @@ pip install fastmcp MaaFw opencv-python
 
 **Windows：**
 ```bash
-claude mcp add MaaDevMCP python "C:\你的路徑\MaaMCP_CC\server.py"
+claude mcp add MaaMCP_CC python "C:\你的路徑\MaaMCP_CC\server.py"
 ```
 
 **macOS / Linux：**
 ```bash
-claude mcp add MaaDevMCP python "/你的路徑/MaaMCP_CC/server.py"
+claude mcp add MaaMCP_CC python "/你的路徑/MaaMCP_CC/server.py"
 ```
 
 ### 步驟四：確認安裝成功
@@ -60,7 +60,7 @@ claude mcp add MaaDevMCP python "/你的路徑/MaaMCP_CC/server.py"
 claude mcp list
 ```
 
-看到 `MaaDevMCP: ... ✓ Connected` 即為成功。
+看到 `MaaMCP_CC: ... ✓ Connected` 即為成功。
 
 ---
 

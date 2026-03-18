@@ -1,5 +1,5 @@
 """
-MaaDevMCP - 專為 Claude Code 設計的 MaaFramework Pipeline 開發工具
+MaaMCP_CC - 專為 Claude Code 設計的 MaaFramework Pipeline 開發工具
 
 設計理念：
 - Claude Code 有視覺能力，截圖直接回傳 base64，不需要依賴 OCR 文字
@@ -36,7 +36,7 @@ from maa.toolkit import Toolkit
 # ── MCP Server ────────────────────────────────────────────────────────────────
 
 mcp = FastMCP(
-    "MaaDevMCP",
+    "MaaMCP_CC",
     instructions="""
 你是一個 MaaFramework Pipeline 開發助手，搭配 Claude Code 使用。
 
