@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import cv2
 import numpy as np
 from fastmcp import FastMCP
+from mcp.types import ImageContent, TextContent
 from maa.controller import AdbController, Win32Controller
 from maa.define import MaaAdbScreencapMethodEnum, MaaAdbInputMethodEnum
 from maa.define import MaaWin32ScreencapMethodEnum, MaaWin32InputMethodEnum
@@ -85,6 +86,13 @@ def _img_to_b64(img: np.ndarray) -> str:
     """numpy 圖片 → base64 PNG 字串"""
     _, buf = cv2.imencode(".png", img)
     return base64.b64encode(buf.tobytes()).decode()
+
+
+def _img_to_image_content(img: np.ndarray, quality: int = 82) -> ImageContent:
+    """numpy 圖片 → MCP ImageContent（JPEG 壓縮，讓 Claude 以視覺模型直接處理）"""
+    _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    b64 = base64.b64encode(buf.tobytes()).decode()
+    return ImageContent(type="image", data=b64, mimeType="image/jpeg")
 
 
 def _safe_asdict(obj) -> Optional[dict]:
@@ -258,9 +266,9 @@ def connect_window(
 
 
 @mcp.tool()
-def screenshot() -> dict:
+def screenshot() -> list:
     """
-    擷取當前螢幕畫面，回傳 base64 PNG 圖片。
+    擷取當前螢幕畫面，回傳圖片供 Claude 視覺分析。
     Claude 可直接視覺分析圖片內容，識別 UI 元素、文字、按鈕位置等。
     這是開發 Pipeline 節點時最重要的工具——先看畫面再寫識別條件。
     """
@@ -271,18 +279,19 @@ def screenshot() -> dict:
 
     img = ctrl.cached_image
     if img is None:
-        return {"success": False, "error": "截圖失敗，請確認設備連接正常"}
+        return [TextContent(type="text", text=json.dumps({"success": False, "error": "截圖失敗，請確認設備連接正常"}))]
 
     h, w = img.shape[:2]
-
-    return {
+    meta = {
         "success": True,
-        "image_base64": _img_to_b64(img),
         "width": w,
         "height": h,
-        "format": "image/png",
         "tip": "使用 test_recognition 測試識別條件，參數中的 roi 格式為 [x, y, width, height]",
     }
+    return [
+        TextContent(type="text", text=json.dumps(meta, ensure_ascii=False)),
+        _img_to_image_content(img),
+    ]
 
 
 @mcp.tool()
@@ -401,8 +410,10 @@ def test_recognition(
         cv2.putText(annotated, f"MISS: {recognition_type}", (10, 35),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 220), 2)
 
-    result["annotated_image_base64"] = _img_to_b64(annotated)
-    return result
+    return [
+        TextContent(type="text", text=json.dumps(result, ensure_ascii=False, default=str)),
+        _img_to_image_content(annotated),
+    ]
 
 
 @mcp.tool()
@@ -500,25 +511,26 @@ def run_task(
             failed_node = node.name
 
     # 任務結束後截圖
-    final_b64 = None
+    final_img = None
     try:
         screencap_job = ctrl.post_screencap()
         screencap_job.wait()
         final_img = ctrl.cached_image
-        if final_img is not None:
-            final_b64 = _img_to_b64(final_img)
     except Exception:
         pass
 
-    return {
+    result_data = {
         "success": success,
         "status": str(task_detail.status),
         "entry": entry,
         "total_nodes_executed": len(nodes_info),
         "nodes_executed": nodes_info,
         "failed_node": failed_node,
-        "screenshot_on_complete_base64": final_b64,
     }
+    content: list = [TextContent(type="text", text=json.dumps(result_data, ensure_ascii=False, default=str))]
+    if final_img is not None:
+        content.append(_img_to_image_content(final_img))
+    return content
 
 
 @mcp.tool()
