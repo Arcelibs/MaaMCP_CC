@@ -16,19 +16,17 @@ import dataclasses
 import json
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import List, Optional, Union
 
 import cv2
 import numpy as np
 from fastmcp import FastMCP
 from mcp.types import ImageContent, TextContent
 from maa.controller import AdbController, Win32Controller
-from maa.define import MaaAdbScreencapMethodEnum, MaaAdbInputMethodEnum
 from maa.define import MaaWin32ScreencapMethodEnum, MaaWin32InputMethodEnum
-from maa.library import Library
 from maa.pipeline import (
-    JActionType, JRecognitionType,
-    JOCR, JTemplateMatch, JColorMatch, JFeatureMatch, JDirectHit, JDoNothing,
+    JRecognitionType,
+    JOCR, JTemplateMatch, JColorMatch, JFeatureMatch, JDirectHit,
 )
 from maa.resource import Resource
 from maa.tasker import Tasker
@@ -45,14 +43,24 @@ mcp = FastMCP(
 
 1. 呼叫 list_devices 查看可用設備
 2. 呼叫 connect_adb（Android）或 connect_window（Windows 應用）連接設備並載入資源
-3. 呼叫 screenshot 查看當前畫面（Claude 可直接視覺分析，無需 OCR）
-4. 呼叫 test_recognition 即時測試 OCR / TemplateMatch 等識別節點
-5. 根據結果修改 Pipeline JSON
-6. 呼叫 run_task 執行任務，取得逐節點執行報告
+3. 呼叫 screenshot 查看當前畫面（Claude 可直接視覺分析）
+4. 需要精確座標時，呼叫 screenshot_with_grid 取得帶格線的截圖
+5. 呼叫 crop_template 裁切 UI 元素作為模板圖
+6. 呼叫 test_recognition 即時測試 OCR / TemplateMatch 等識別節點
+7. 根據結果修改 Pipeline JSON
+8. 呼叫 run_task 執行任務，取得逐節點執行報告
+
+## Token 管理策略
+
+- screenshot(include_image=False)：只回傳 OCR 文字，極省 token（日常操作用）
+- screenshot()：回傳壓縮圖片，適合需要視覺分析時使用
+- screenshot_with_grid()：帶座標格線，定位 UI 元素時使用
+- 圖片已自動壓縮縮放，但仍比純文字消耗更多 token
 
 ## 關鍵優勢
 
-- screenshot 回傳的是 base64 圖片，Claude 可直接看到畫面
+- screenshot_with_grid 讓 Claude 能精確定位 UI 座標
+- crop_template 直接裁切模板圖並提供 Pipeline JSON 用法
 - test_recognition 不需要寫入檔案，即時測試識別定義
 - run_task 回傳詳細的節點執行報告，方便追蹤失敗原因
 """,
@@ -75,21 +83,29 @@ def _ensure_toolkit():
 
 
 def _get_session():
+    """取得當前 session，未連接時回傳錯誤 dict 而非拋例外"""
     if _tasker is None or not _tasker.inited:
-        raise RuntimeError(
-            "尚未連接設備。請先呼叫 connect_adb 或 connect_window，並確認設備已連接且資源已載入。"
-        )
+        return None, None, None
     return _controller, _resource, _tasker
 
 
-def _img_to_b64(img: np.ndarray) -> str:
-    """numpy 圖片 → base64 PNG 字串"""
-    _, buf = cv2.imencode(".png", img)
-    return base64.b64encode(buf.tobytes()).decode()
+def _require_session():
+    """取得當前 session，未連接時回傳錯誤訊息供工具直接 return"""
+    ctrl, res, tasker = _get_session()
+    if tasker is None:
+        return None, None, None, {
+            "success": False,
+            "error": "尚未連接設備。請先呼叫 connect_adb 或 connect_window。",
+        }
+    return ctrl, res, tasker, None
 
 
-def _img_to_image_content(img: np.ndarray, quality: int = 82) -> ImageContent:
-    """numpy 圖片 → MCP ImageContent（JPEG 壓縮，讓 Claude 以視覺模型直接處理）"""
+def _img_to_image_content(img: np.ndarray, quality: int = 60, max_width: int = 960) -> ImageContent:
+    """numpy 圖片 → MCP ImageContent（壓縮 + 縮放，控制 token 消耗）"""
+    h, w = img.shape[:2]
+    if w > max_width:
+        scale = max_width / w
+        img = cv2.resize(img, (max_width, int(h * scale)), interpolation=cv2.INTER_AREA)
     _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
     b64 = base64.b64encode(buf.tobytes()).decode()
     return ImageContent(type="image", data=b64, mimeType="image/jpeg")
@@ -266,13 +282,17 @@ def connect_window(
 
 
 @mcp.tool()
-def screenshot() -> list:
+def screenshot(include_image: bool = True) -> list:
     """
-    擷取當前螢幕畫面，回傳圖片供 Claude 視覺分析。
-    Claude 可直接視覺分析圖片內容，識別 UI 元素、文字、按鈕位置等。
-    這是開發 Pipeline 節點時最重要的工具——先看畫面再寫識別條件。
+    擷取當前螢幕畫面。預設回傳壓縮圖片供 Claude 視覺分析。
+    若 token 不足，可設定 include_image=False 只回傳 OCR 文字結果。
+
+    Args:
+        include_image: 是否回傳圖片。True=圖片+metadata，False=只回傳 OCR 文字結果（省 token）
     """
-    ctrl, _, _ = _get_session()
+    ctrl, _, tasker, err = _require_session()
+    if err:
+        return err
 
     job = ctrl.post_screencap()
     job.wait()
@@ -282,11 +302,35 @@ def screenshot() -> list:
         return [TextContent(type="text", text=json.dumps({"success": False, "error": "截圖失敗，請確認設備連接正常"}))]
 
     h, w = img.shape[:2]
+
+    if not include_image:
+        # OCR 模式：只回傳文字，極省 token
+        ocr_param = JOCR()
+        reco_job = tasker.post_recognition(JRecognitionType.OCR, ocr_param, img)
+        reco_job.wait()
+        task_detail = tasker.get_task_detail(reco_job.job_id)
+        ocr_results = []
+        if task_detail and task_detail.node_id_list:
+            node = tasker.get_node_detail(task_detail.node_id_list[0])
+            if node and node.recognition and node.recognition.all_results:
+                for r in node.recognition.all_results:
+                    d = _safe_asdict(r)
+                    if d:
+                        ocr_results.append(d)
+
+        return [TextContent(type="text", text=json.dumps({
+            "success": True,
+            "width": w, "height": h,
+            "mode": "ocr_only",
+            "ocr_results": ocr_results,
+            "tip": "如需視覺分析，呼叫 screenshot(include_image=True) 或 screenshot_with_grid",
+        }, ensure_ascii=False, default=str))]
+
     meta = {
         "success": True,
         "width": w,
         "height": h,
-        "tip": "使用 test_recognition 測試識別條件，參數中的 roi 格式為 [x, y, width, height]",
+        "tip": "使用 test_recognition 測試識別條件，roi 格式為 [x, y, width, height]",
     }
     return [
         TextContent(type="text", text=json.dumps(meta, ensure_ascii=False)),
@@ -298,7 +342,7 @@ def screenshot() -> list:
 def test_recognition(
     recognition_type: str,
     params: dict,
-) -> dict:
+) -> list:
     """
     在當前螢幕畫面上即時測試一個識別節點定義。
     不需要寫入 Pipeline 檔案，直接測試識別結果。
@@ -325,9 +369,11 @@ def test_recognition(
         box: 命中區域 [x, y, width, height]
         best_result: 最佳識別結果的詳細資訊
         all_results_count: 所有候選結果的數量
-        annotated_image_base64: 標記了識別結果的截圖（命中為綠框，未命中顯示 MISS）
+        annotated_image: 標記了識別結果的截圖（命中為綠框，未命中顯示 MISS）
     """
-    ctrl, _, tasker = _get_session()
+    ctrl, _, tasker, err = _require_session()
+    if err:
+        return err
 
     # 驗證識別類型
     reco_type_map = {
@@ -421,7 +467,7 @@ def run_task(
     entry: str,
     pipeline_override: Optional[dict] = None,
     timeout_seconds: int = 120,
-) -> dict:
+) -> list:
     """
     執行 Pipeline 任務，回傳詳細的逐節點執行報告。
     支援即時覆蓋節點定義，方便快速測試修改而不需要寫入檔案。
@@ -438,9 +484,11 @@ def run_task(
         status: 最終狀態
         nodes_executed: 執行過的每個節點詳情（識別是否命中、執行什麼動作）
         failed_node: 第一個失敗的節點名稱（如果有）
-        screenshot_on_complete: 任務結束時的畫面（base64）
+        screenshot_on_complete: 任務結束時的畫面
     """
-    ctrl, _, tasker = _get_session()
+    ctrl, _, tasker, err = _require_session()
+    if err:
+        return err
 
     override = pipeline_override or {}
     task_job = tasker.post_task(entry, override)
@@ -573,6 +621,77 @@ def list_tasks(pipeline_path: Optional[str] = None) -> dict:
 
 
 @mcp.tool()
+def click(x: int, y: int) -> dict:
+    """
+    點擊螢幕上的指定座標。
+    開發 Pipeline 時用來手動導航遊戲到特定畫面，以便截圖或測試識別。
+
+    Args:
+        x: X 座標
+        y: Y 座標
+    """
+    ctrl, _, _, err = _require_session()
+    if err:
+        return err
+
+    ctrl.post_click(x, y).wait()
+    return {"success": True, "clicked": [x, y]}
+
+
+@mcp.tool()
+def swipe(x1: int, y1: int, x2: int, y2: int, duration: int = 500) -> dict:
+    """
+    在螢幕上滑動。用於捲動列表、翻頁等操作。
+
+    Args:
+        x1: 起始 X 座標
+        y1: 起始 Y 座標
+        x2: 結束 X 座標
+        y2: 結束 Y 座標
+        duration: 滑動時間（毫秒），預設 500
+    """
+    ctrl, _, _, err = _require_session()
+    if err:
+        return err
+
+    ctrl.post_swipe(x1, y1, x2, y2, duration).wait()
+    return {"success": True, "from": [x1, y1], "to": [x2, y2], "duration": duration}
+
+
+@mcp.tool()
+def reload_resource() -> dict:
+    """
+    重新載入資源包。修改 Pipeline JSON 或新增模板圖片後，
+    呼叫此工具即可生效，不需要重新連接設備。
+    """
+    global _resource, _tasker
+
+    if _resource is None or _resource_path is None or _controller is None:
+        return {"success": False, "error": "尚未連接設備，請先呼叫 connect_adb 或 connect_window"}
+
+    res = Resource()
+    res_job = res.post_bundle(_resource_path)
+    res_job.wait()
+
+    if not res.loaded:
+        return {"success": False, "error": f"資源載入失敗: {_resource_path}"}
+
+    tasker = Tasker()
+    if not tasker.bind(res, _controller):
+        return {"success": False, "error": "Tasker 重新綁定失敗"}
+
+    _resource = res
+    _tasker = tasker
+
+    return {
+        "success": True,
+        "resource_path": _resource_path,
+        "total_tasks": len(res.node_list),
+        "tasks_preview": res.node_list[:30],
+    }
+
+
+@mcp.tool()
 def stop_task() -> dict:
     """
     停止當前正在執行的 Pipeline 任務。
@@ -585,21 +704,157 @@ def stop_task() -> dict:
 
 
 @mcp.tool()
+def screenshot_with_grid(grid_step: int = 100) -> list:
+    """
+    擷取當前螢幕畫面並疊加座標格線，方便精確定位 UI 元素的座標。
+    開發 Pipeline 時的核心工具：先用此工具看清楚每個按鈕/元素的精確座標，
+    再據此設定 roi、template 的裁切區域等。
+
+    Args:
+        grid_step: 格線間距（像素），預設 100
+    """
+    ctrl, _, _, err = _require_session()
+    if err:
+        return err
+
+    job = ctrl.post_screencap()
+    job.wait()
+
+    img = ctrl.cached_image
+    if img is None:
+        return [TextContent(type="text", text=json.dumps({"success": False, "error": "截圖失敗"}))]
+
+    h, w = img.shape[:2]
+    result = img.copy()
+
+    # 格線
+    for x in range(0, w, grid_step):
+        cv2.line(result, (x, 0), (x, h), (0, 0, 255), 1, cv2.LINE_AA)
+    for y in range(0, h, grid_step):
+        cv2.line(result, (0, y), (w, y), (0, 0, 255), 1, cv2.LINE_AA)
+
+    # 座標標籤（黑底黃字）
+    for x in range(0, w, grid_step):
+        cv2.rectangle(result, (x + 1, 0), (x + 40, 20), (0, 0, 0), -1)
+        cv2.putText(result, str(x), (x + 2, 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
+    for y in range(0, h, grid_step):
+        cv2.rectangle(result, (0, y + 1), (40, y + 20), (0, 0, 0), -1)
+        cv2.putText(result, str(y), (2, y + 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
+
+    meta = {
+        "success": True,
+        "width": w,
+        "height": h,
+        "grid_step": grid_step,
+        "tip": "根據格線座標確定 roi 區域，格式為 [x, y, width, height]",
+    }
+    return [
+        TextContent(type="text", text=json.dumps(meta, ensure_ascii=False)),
+        _img_to_image_content(result),
+    ]
+
+
+@mcp.tool()
+def crop_template(
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    save_name: str,
+    new_screenshot: bool = False,
+) -> list:
+    """
+    從螢幕截圖裁切一塊區域，儲存為模板圖片供 TemplateMatch 使用。
+    通常搭配 screenshot_with_grid 使用：先看格線確定座標，再裁切。
+
+    預設使用上一次截圖的快取（與 screenshot_with_grid 看到的是同一張），
+    設定 new_screenshot=True 可強制拍新截圖。
+
+    裁切的圖片會儲存到已載入資源包的 image/ 目錄下。
+
+    Args:
+        x: 裁切起始 X 座標
+        y: 裁切起始 Y 座標
+        width: 裁切寬度
+        height: 裁切高度
+        save_name: 儲存檔名（不含路徑，例如 "skip_button.png"）
+        new_screenshot: 是否拍新截圖。False=使用快取（預設），True=拍新的
+    """
+    ctrl, _, _, err = _require_session()
+    if err:
+        return err
+
+    if new_screenshot or ctrl.cached_image is None:
+        job = ctrl.post_screencap()
+        job.wait()
+
+    img = ctrl.cached_image
+    if img is None:
+        return [TextContent(type="text", text=json.dumps({"success": False, "error": "截圖失敗，請先呼叫 screenshot 或設定 new_screenshot=True"}))]
+
+    img_h, img_w = img.shape[:2]
+
+    # 邊界檢查
+    if x < 0 or y < 0 or x + width > img_w or y + height > img_h:
+        return [TextContent(type="text", text=json.dumps({
+            "success": False,
+            "error": f"裁切區域超出螢幕範圍 ({img_w}x{img_h})",
+            "requested": {"x": x, "y": y, "width": width, "height": height},
+        }))]
+
+    cropped = img[y:y + height, x:x + width]
+
+    # 儲存到資源包的 image/ 目錄
+    if _resource_path:
+        save_dir = Path(_resource_path) / "image"
+    else:
+        save_dir = Path("./assets/resource/image")
+
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    if not save_name.endswith(".png"):
+        save_name += ".png"
+    save_path = save_dir / save_name
+
+    cv2.imwrite(str(save_path), cropped)
+
+    meta = {
+        "success": True,
+        "saved_to": str(save_path),
+        "roi": [x, y, width, height],
+        "template_size": {"width": width, "height": height},
+        "pipeline_usage": {
+            "recognition": "TemplateMatch",
+            "template": [save_name],
+            "roi": [x, y, width, height],
+        },
+        "tip": "上方是可以直接貼到 Pipeline JSON 的識別定義",
+    }
+    return [
+        TextContent(type="text", text=json.dumps(meta, ensure_ascii=False)),
+        _img_to_image_content(cropped),
+    ]
+
+
+@mcp.tool()
 def get_session_info() -> dict:
     """
     取得當前連接狀態和已載入資源的資訊。
     """
-    if _tasker is None or _controller is None:
+    ctrl, res, tasker = _get_session()
+    if tasker is None:
         return {"connected": False}
 
     try:
-        w, h = _controller.resolution
+        w, h = ctrl.resolution
         return {
             "connected": True,
-            "inited": _tasker.inited,
+            "inited": tasker.inited,
             "resource_path": _resource_path,
             "resolution": {"width": w, "height": h},
-            "total_tasks": len(_resource.node_list) if _resource else 0,
+            "total_tasks": len(res.node_list) if res else 0,
         }
     except Exception as e:
         return {"connected": False, "error": str(e)}
