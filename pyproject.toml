@@ -1,6 +1,6 @@
 [project]
 name = "maamcp-cc"
-version = "0.2.0"
+version = "0.3.0"
 description = "MaaFramework Pipeline 開發工具 MCP Server，專為 Claude Code 設計"
 readme = "README.md"
 license = "MIT"
